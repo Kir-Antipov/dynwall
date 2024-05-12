@@ -1,0 +1,657 @@
+#!/bin/sh
+#
+# Generate dynamic wallpapers.
+
+#################################################
+#          Configure the dialog style.          #
+#################################################
+DIALOG_TITLE="Dynamic Wallpaper Generator"
+DIALOG_STYLE=""
+
+#################################################
+# Checks if the specified command exists.
+# Arguments:
+#   $1. The command to check.
+# Returns:
+#   0 if the specified command exists;
+#   otherwise, a non-zero status.
+#################################################
+command_exists() {
+  command -v "${1}" > /dev/null 2>& 1
+}
+
+#################################################
+# Downloads a file.
+# Arguments:
+#   $1. The URL of the file to download.
+#   $2. The destination of the downloaded file.
+#       If not provided, the file will be written
+#       to stdout.
+# Returns:
+#   0 if the operation succeeds;
+#   otherwise, a non-zero status.
+#################################################
+download() {
+  if command_exists wget; then
+    wget -O "${2:-"-"}" "${1}"
+  elif command_exists curl; then
+    curl -Lo "${2:-"-"}" "${1}"
+  fi
+}
+
+#################################################
+# Checks if the current user is the root user.
+# Arguments:
+#   None
+# Returns:
+#   0 if the current user is root; otherwise, 1.
+#################################################
+is_root() {
+  [ "${EUID:-"$(id -u)"}" -eq 0 ]
+}
+
+#################################################
+# Displays an error message using an appropriate
+# dialog based on the current desktop environment
+# or outputs it to stderr if no supported desktop
+# environment is detected.
+# Arguments:
+#   $1. The error message to display.
+#   $2. The title of the error dialog.
+# Outputs:
+#   Depending on the desktop environment:
+#   - KDE: Displays an error using kdialog.
+#   - GNOME: Displays an error using zenity.
+#   - Other: Outputs the error message to stderr.
+#################################################
+error() {
+  case "${DIALOG_STYLE}" in
+    *KDE*) kdialog --error "${1}" --title "${2:-"${DIALOG_TITLE}"}" > /dev/null 2>& 1 ;;
+    *GNOME*) zenity --error --text="${1}" --title="${2:-"${DIALOG_TITLE}"}" > /dev/null 2>& 1 ;;
+    *) echo "${1}" >& 2 ;;
+  esac
+}
+
+#################################################
+# Displays an alert message using an appropriate
+# dialog based on the current desktop environment
+# or outputs it to stdout if no supported desktop
+# environment is detected.
+# Arguments:
+#   $1. The message to display.
+#   $2. The title of the alert dialog.
+# Outputs:
+#   Depending on the desktop environment:
+#   - KDE: Displays a message box using kdialog.
+#   - GNOME: Displays a message box using zenity.
+#   - Other: Outputs the message to stdout.
+#################################################
+alert() {
+  case "${DIALOG_STYLE}" in
+    *KDE*) kdialog --msgbox "${1}" --title "${2:-"${DIALOG_TITLE}"}" > /dev/null 2>& 1 ;;
+    *GNOME*) zenity --info --text="${1}" --title="${2:-"${DIALOG_TITLE}"}" > /dev/null 2>& 1 ;;
+    *) echo "${1}" ;;
+  esac
+}
+
+#################################################
+# Prompts the user for input using an appropriate
+# dialog based on the current desktop environment
+# or via command-line input if no supported
+# desktop environment is detected.
+# Arguments:
+#   $1. The prompt message.
+#   $2. The title of the prompt dialog.
+# Outputs:
+#   Depending on the desktop environment:
+#   - KDE: Displays a prompt using kdialog.
+#   - GNOME: Displays a prompt using zenity.
+#   - Other: Prompts for input via command line.
+#   Outputs the user's input to stdout.
+#################################################
+prompt() {
+  case "${DIALOG_STYLE}" in
+    *KDE*) kdialog --inputbox "${1}:" --title "${2:-"${DIALOG_TITLE}"}" 2> /dev/null ;;
+    *GNOME*) zenity --entry --text="${1}:" --title="${2:-"${DIALOG_TITLE}"}" 2> /dev/null ;;
+    *)
+      echo -n "${1}: " >& 2
+      read -r prompt_response
+      echo "${prompt_response}"
+      ;;
+  esac
+}
+
+#################################################
+# Displays a confirmation message and waits for
+# user input to confirm or cancel the action,
+# using an appropriate dialog based on the
+# current desktop environment. If no supported
+# desktop environment is detected, it prompts
+# for input via command line.
+# Arguments:
+#   $1. The confirmation message.
+#   $2. The title of the confirmation dialog.
+# Outputs:
+#   Depending on the desktop environment:
+#   - KDE: Displays a dialog using kdialog.
+#   - GNOME: Displays a dialog using zenity.
+#   - Other: Prompts for input via command line.
+# Returns:
+#   0 if the user confirms the action;
+#   otherwise, 1.
+#################################################
+confirm() {
+  case "${DIALOG_STYLE}" in
+    *KDE*) kdialog --yesno "${1}" --title "${2:-"${DIALOG_TITLE}"}" > /dev/null 2>& 1 ;;
+    *GNOME*) zenity --question --text="${1}" --title="${2:-"${DIALOG_TITLE}"}" > /dev/null 2>& 1 ;;
+    *)
+      echo -n "${1} [Y/n]: " >& 2
+      read -r confirm_response
+      case "`echo "${confirm_response}" | tr "[:upper:]" "[:lower:]"`" in
+        y|yes|yep) return 0 ;;
+        n|no|nope) return 1 ;;
+        *) confirm "${1}" ;;
+      esac
+      ;;
+  esac
+}
+
+#################################################
+# Displays a file selection dialog.
+# The dialog type is determined based on the
+# current desktop environment. If no supported
+# desktop environment is detected, it prompts for
+# input via command line.
+# Arguments:
+#   $1. The message to display in the dialog.
+#   $2. The file filter for the dialog.
+#   $3. The title of the dialog.
+# Outputs:
+#   Depending on the desktop environment:
+#   - KDE: Displays a dialog using kdialog.
+#   - GNOME: Displays a dialog using zenity.
+#   - Other: Prompts for input via command line.
+#   Outputs the user's input to stdout.
+#################################################
+select_file() {
+  case "${DIALOG_STYLE}" in
+    *KDE*) kdialog --getopenfilename . "$(echo "${2:-"*"}" | sed "s/.*|\s*//g") | *" --title "${3:-"${1:-"${DIALOG_TITLE}"}"}" 2> /dev/null ;;
+    *GNOME*) zenity --file-selection --file-filter="${2:-"All Files | *"}" --file-filter="All Files | *" --title="${3:-"${1:-"${DIALOG_TITLE}"}"}" 2> /dev/null ;;
+    *) prompt "${1}" "${3}" ;;
+  esac
+}
+
+#################################################
+# Displays a directory selection dialog.
+# The dialog type is determined based on the
+# current desktop environment. If no supported
+# desktop environment is detected, it prompts for
+# input via command line.
+# Arguments:
+#   $1. The message to display in the dialog.
+#   $2. The title of the dialog.
+# Outputs:
+#   Depending on the desktop environment:
+#   - KDE: Displays a dialog using kdialog.
+#   - GNOME: Displays a dialog using zenity.
+#   - Other: Prompts for input via command line.
+#   Outputs the user's input to stdout.
+#################################################
+select_directory() {
+  case "${DIALOG_STYLE}" in
+    *KDE*) kdialog --getexistingdirectory . --title "${2:-"${1:-"${DIALOG_TITLE}"}"}" 2> /dev/null ;;
+    *GNOME*) zenity --file-selection --directory --save --title="${2:-"${1:-"${DIALOG_TITLE}"}"}" 2> /dev/null ;;
+    *) prompt "${1}" "${2}" ;;
+  esac
+}
+
+#################################################
+# Retrieves the current screen resolution.
+# Arguments:
+#   None.
+# Outputs:
+#   Writes the current screen resolution in
+#   the format WIDTHxHEIGHT to stdout.
+#################################################
+current_resolution() {
+  if command_exists xdpyinfo; then
+    xdpyinfo | grep 'dimensions' | sed -E 's/^[^0-9]*([0-9]+x[0-9]+).*$/\1/'
+  else
+    cat /sys/class/drm/**/modes | head --lines 1
+  fi
+}
+
+#################################################
+# Retrieves the name of the current desktop
+# environment.
+# Arguments:
+#   None.
+# Outputs:
+#   Writes the name of the current desktop
+#   environment to stdout.
+#################################################
+current_desktop() {
+  echo "${XDG_CURRENT_DESKTOP:-"${XDG_SESSION_DESKTOP}"}"
+}
+
+#################################################
+# Determines the default directory for storing
+# wallpapers/backgrounds based on the current
+# desktop environment and user privileges.
+# Arguments:
+#   None.
+# Outputs:
+#   Writes the default directory path for
+#   wallpapers/backgrounds to stdout.
+#################################################
+default_theme_output() {
+  case "$(current_desktop)" in
+    *KDE*) is_root && echo "/usr/share/wallpapers" || echo "${HOME}/.local/share/wallpapers" ;;
+    *GNOME*) is_root && echo "/usr/share/backgrounds" || echo "${HOME}/.local/share/backgrounds" ;;
+  esac
+}
+
+#################################################
+# Sets up the dialog style based on the provided
+# argument or the current desktop environment.
+# Arguments:
+#   $1. The desired dialog style
+#       (i.e., KDE, GNOME, or TERMINAL).
+#################################################
+setup_dialog_style() {
+  if [ -n "${1}" ]; then
+    DIALOG_STYLE="$(echo "${1}" | tr '[:lower:]' '[:upper:]')"
+    return
+  fi
+
+  [ -n "${DIALOG_STYLE}" ] && return
+
+  DIALOG_STYLE="$(current_desktop)"
+  case "${DIALOG_STYLE}" in
+    *KDE*)
+      if ! command_exists kdialog; then
+        DIALOG_STYLE=""
+      fi
+      ;;
+
+    *GNOME*)
+      if ! command_exists zenity; then
+        DIALOG_STYLE=""
+      fi
+      ;;
+  esac
+
+  if [ -z "${DIALOG_STYLE}" ]; then
+    if command_exists kdialog; then
+      DIALOG_STYLE="KDE"
+    elif command_exists zenity; then
+      DIALOG_STYLE="GNOME"
+    fi
+  fi
+}
+
+#################################################
+# Generates metadata content for a wallpaper in
+# the .desktop format, suitable for KDE Plasma
+# desktop versions before v6.0.
+# Arguments:
+#   $1. The plugin ID.
+#   $2. The name of the wallpaper.
+#   $3. The author of the wallpaper.
+#   $4. The email of the author.
+#   $5. The license of the wallpaper.
+# Outputs:
+#   Writes the metadata content to stdout.
+#################################################
+wallpaper_metadata_desktop() {
+  echo "[Desktop Entry]"
+  echo "Name=${2}"
+  echo "X-KDE-PluginInfo-Name=${1}"
+  echo "X-KDE-PluginInfo-Author=${3}"
+  echo "X-KDE-PluginInfo-Email=${4}"
+  echo "X-KDE-PluginInfo-License=${5}"
+}
+
+#################################################
+# Generates metadata content for a wallpaper in
+# the JSON format, suitable for KDE Plasma
+# desktop versions after v6.0.
+# Arguments:
+#   $1. The plugin ID.
+#   $2. The name of the wallpaper.
+#   $3. The author of the wallpaper.
+#   $4. The email of the author.
+#   $5. The license of the wallpaper.
+# Outputs:
+#   Writes the metadata content to stdout.
+#################################################
+wallpaper_metadata_json() {
+  echo "{"
+  echo "  \"KPlugin\": {"
+  echo "    \"Id\": \"${1}\","
+  echo "    \"Name\": \"${2}\","
+  echo "    \"License\": \"${5}\","
+  echo "    \"Authors\": [{"
+  echo "      \"Name\": \"${3}\","
+  echo "      \"Email\": \"${4}\""
+  echo "    }]"
+  echo "  }"
+  echo "}"
+}
+
+#################################################
+# Generates metadata content for a wallpaper in
+# the XML format, suitable for the GNOME desktop.
+# Arguments:
+#   $1. The name of the wallpaper.
+#   $2. The filename of the wallpaper.
+#   $3. The filename of the dark version of
+#       the wallpaper.
+#   $4. The filename of the wallpaper for
+#       time-of-day transitions.
+#   $5. The author of the wallpaper.
+#   $6. The email of the author.
+#   $7. The license of the wallpaper.
+# Outputs:
+#   Writes the metadata content to stdout.
+#################################################
+wallpaper_metadata_xml() {
+  echo "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+  echo "<!DOCTYPE wallpapers SYSTEM \"gnome-wp-list.dtd\">"
+  echo "<wallpapers>"
+
+  echo "  <wallpaper deleted=\"false\">"
+  echo "    <name>${1}</name>"
+  echo "    <filename>${2}</filename>"
+  echo "    <filename-dark>${3}</filename-dark>"
+  echo "    <options>zoom</options>"
+  echo "    <shade_type>solid</shade_type>"
+  echo "    <author>${5}</author>"
+  echo "    <email>${6}</email>"
+  echo "    <license>${7}</license>"
+  echo "  </wallpaper>"
+
+  if [ -n "${4}" ]; then
+    echo "  <wallpaper deleted=\"false\">"
+    echo "    <name>${1} Time of Day</name>"
+    echo "    <filename>${4}</filename>"
+    echo "    <options>zoom</options>"
+    echo "    <author>${5}</author>"
+    echo "    <email>${6}</email>"
+    echo "    <license>${7}</license>"
+    echo "  </wallpaper>"
+  fi
+
+  echo "</wallpapers>"
+}
+
+#################################################
+# Generates metadata content for time-shifting
+# wallpapers in the XML format, suitable for
+# the GNOME desktop.
+# Arguments:
+#   $1. The filename of the wallpaper for the
+#       initial time.
+#   $2. The filename of the wallpaper for the
+#       shifted time.
+# Outputs:
+#   Writes the metadata content to stdout.
+#################################################
+wallpaper_metadata_time_of_day_xml() {
+  echo "<background>"
+  echo "  <starttime>"
+  echo "    <year>2024</year>"
+  echo "    <month>01</month>"
+  echo "    <day>01</day>"
+  echo "    <hour>08</hour>"
+  echo "    <minute>00</minute>"
+  echo "    <second>00</second>"
+  echo "  </starttime>"
+  echo "  <static>"
+  echo "    <duration>36000.0</duration>"
+  echo "    <file>${1}</file>"
+  echo "  </static>"
+  echo "  <transition type=\"overlay\">"
+  echo "    <duration>7200.0</duration>"
+  echo "    <from>${1}</from>"
+  echo "    <to>${2}</to>"
+  echo "  </transition>"
+  echo "  <static>"
+  echo "    <duration>36000.0</duration>"
+  echo "    <file>${2}</file>"
+  echo "  </static>"
+  echo "  <transition type=\"overlay\">"
+  echo "    <duration>7200.0</duration>"
+  echo "    <from>${2}</from>"
+  echo "    <to>${1}</to>"
+  echo "  </transition>"
+  echo "</background>"
+}
+
+#################################################
+# Saves a file from a given source URI
+# to a specified destination path.
+# Arguments:
+#   $1. The source URI (URL or local file path).
+#   $2. The destination path to save the file.
+# Outputs:
+#   If successful, writes the new file path
+#   to stdout.
+# Returns:
+#   0 if the operation succeeds;
+#   otherwise, a non-zero status.
+#################################################
+save_file() {
+  if [ -f "${1}" ]; then
+    cp "${1}" "${2}" > /dev/null 2>& 1
+  else
+    download "${1}" "${2}" > /dev/null 2>& 1
+  fi
+
+  if [ $? -eq 0 ]; then
+    new_file_path="${2}.$(file -b --extension "${2}" | sed -e 's|/.*||g' -e 's/^jpeg$/jpg/')"
+    mv "${2}" "${new_file_path}" > /dev/null 2>& 1 && \
+    echo "${new_file_path}"
+  fi
+}
+
+#################################################
+# Prints a brief help message.
+# Arguments:
+#   None
+# Outputs:
+#   Writes the help message to stdout.
+#################################################
+help() {
+  echo "Usage: ${0} [<options>]"
+  echo
+  echo "Generate dynamic wallpapers."
+  echo
+  echo "Examples:"
+  echo "  ${0}"
+  echo "  ${0} -n \"My Theme\" -l \"light.png\" -d \"dark.png\" --no-time-shifting"
+  echo "  ${0} -n \"My Theme\" -l \"https://example.com/light.png\" -d \"dark.png\" -t"
+  echo "  sudo -E ${0} -s terminal --force"
+  echo
+  echo "Options:"
+  echo "  -h, --help                     Display this help text and exit."
+  echo "  -l, --light-image <uri>        Set a URI of the light wallpaper image."
+  echo "  -d, --dark-image <uri>         Set a URI of the dark wallpaper image."
+  echo "  -i, --id <id>                  Set an identifier for the wallpaper."
+  echo "  -n, --name <name>              Set a name for the wallpaper."
+  echo "  -t, --time-shifting            Enable time-shifting for the wallpaper."
+  echo "  --no-time-shifting             Disable time-shifting for the wallpaper."
+  echo "  -o, --output-directory <path>  Set a directory to save the wallpaper."
+  echo "  -f, --force                    Allow overwriting existing files."
+  echo "  -s, --style <style>            Choose a dialog style: KDE, GNOME, or TERMINAL."
+  echo "  -a, --author <author>          Specify an author of the wallpaper."
+  echo "  -e, --email <name>             Specify an email of the author of the wallpaper."
+  echo "  -c, --license <license>        Specify a license for the wallpaper."
+}
+
+#################################################
+# Formats and prints the provided error message,
+# displays the help page, and terminates the
+# process.
+# Arguments:
+#   $1. The error message to format and print.
+# Outputs:
+#   Writes the formatted error message to stderr.
+# Returns:
+#   Never returns (exits with a status of 1).
+#################################################
+fatal_error() {
+  error "${1}"
+  help >& 2
+  exit 1
+}
+
+#################################################
+# The main entry point for the script.
+# Arguments:
+#   ... A list of the command line arguments.
+#################################################
+main() {
+  setup_dialog_style
+
+  theme_image_light=""
+  theme_image_dark=""
+  theme_id=""
+  theme_name=""
+  theme_time_shifting=""
+  theme_output=""
+  force=1
+  theme_author_name=""
+  theme_author_email=""
+  theme_license=""
+
+  # Parse the arguments and options.
+  while [ -n "${1}" ]; do
+    case "${1}" in
+      -h|--help) help; exit 0 ;;
+      -l|--light-image) theme_image_light="${2}"; shift ;;
+      -d|--dark-image) theme_image_dark="${2}"; shift ;;
+      -i|--id) theme_id="${2}"; shift ;;
+      -n|--name) theme_name="${2}"; shift ;;
+      -t|--time-shifting) theme_time_shifting=0 ;;
+      --no-time-shifting) theme_time_shifting=1 ;;
+      -o|--output-directory) theme_output="${2}"; shift ;;
+      -f|--force) force=0 ;;
+      -s|--style) setup_dialog_style "${2}"; shift ;;
+      -a|--author) theme_author_name="${2}"; shift ;;
+      -e|--email) theme_author_email="${2}"; shift ;;
+      -c|--license) theme_license="${2}"; shift ;;
+      -*) fatal_error "invalid option: ${1}" ;;
+      *) fatal_error "invalid argument: ${1}";;
+    esac
+    shift 2> /dev/null
+  done
+
+  # Prompt the user to enter a name for the wallpaper.
+  theme_name="${theme_name:-"$(prompt "Enter a name of the wallpaper")"}"
+  [ -z "${theme_name}" ] && return 1
+
+  # Generate an ID for the wallpaper based on its name.
+  theme_id="${theme_id:-"$(echo "${theme_name}" | sed -e 's/[^a-zA-Z0-9]/-/g' -e 's/-\+/-/g' -e 's/-$//' -e 's/^-//' | tr '[:upper:]' '[:lower:]')"}"
+  [ -z "${theme_id}" ] && return 1
+
+  # Prompt the user to select a light version of the wallpaper.
+  theme_image_light="${theme_image_light:-"$(select_file "Choose a light version of the wallpaper" "Images | *.png *.jpg *.jpeg *.gif *.webp")"}"
+  [ -z "${theme_image_light}" ] && return 1
+
+  # Prompt the user to select a dark version of the wallpaper.
+  theme_image_dark="${theme_image_dark:-"$(select_file "Choose a dark version of the wallpaper" "Images | *.png *.jpg *.jpeg *.gif *.webp")"}"
+  [ -z "${theme_image_dark}" ] && return 1
+
+  # Ask the user if they want to enable the time-shifting feature for this wallpaper.
+  if [ -z "${theme_time_shifting}" ]; then
+    confirm "Do you want to enable the time-shifting feature for this wallpaper?"
+    theme_time_shifting=$?
+  fi
+
+  # Determine the output directory for the wallpaper.
+  if [ -z "${theme_output}" ] && [ -n "$(default_theme_output)" ]; then
+    theme_output="$(default_theme_output)/${theme_id}"
+  fi
+  theme_output="${theme_output:-"$(select_directory "Choose a location to save the wallpaper")"}"
+  [ -z "${theme_output}" ] && return 1
+
+  # Define paths for different components of the wallpaper.
+  theme_image_light_output="${theme_output}/contents/images/$(current_resolution)"
+  theme_image_dark_output="${theme_output}/contents/images_dark/$(current_resolution)"
+  theme_metadata_desktop_output="${theme_output}/metadata.desktop"
+  theme_metadata_json_output="${theme_output}/metadata.json"
+  theme_metadata_xml_output="${theme_output}/metadata.xml"
+  theme_metadata_time_of_day_xml_output=""
+  if [ "${theme_time_shifting}" -eq 0 ]; then
+    theme_metadata_time_of_day_xml_output="${theme_output}/metadata.time-of-day.xml"
+  fi
+
+  # Determine author name, email, and license for the wallpaper.
+  theme_author_name="${theme_author_name:-"$(git config --global user.name)"}"
+  theme_author_name="${theme_author_name:-"${USER:-"$(id -un)"}"}"
+  theme_author_email="${theme_author_email:-"$(git config --global user.email)"}"
+  theme_license="${theme_license:-"MIT"}"
+
+  # Check if the output directory is not empty.
+  if [ -d "${theme_output}" ] && [ -n "$(ls -A "${theme_output}")" ] && [ "${force}" != 0 ]; then
+    error "cannot save the wallpaper: The output directory is not empty."
+    return 1
+  fi
+
+  # Create all the necessary directories.
+  rm -rf "${theme_output}"
+  mkdir -p "$(dirname "${theme_image_light_output}")" && \
+  mkdir -p "$(dirname "${theme_image_dark_output}")"
+  if [ $? -ne 0 ]; then
+    error "cannot save the wallpaper: Failed to create the output directory."
+    return 1
+  fi
+
+  # Save theme images to the output directory.
+  theme_image_light_output="$(save_file "${theme_image_light}" "${theme_image_light_output}")"
+  theme_image_dark_output="$(save_file "${theme_image_dark}" "${theme_image_dark_output}")"
+  if [ -z "${theme_image_light_output}" ] || [ -z "${theme_image_dark_output}" ]; then
+    error "cannot save the wallpaper: Failed to copy the images to the output directory."
+    rm -rf "${theme_output}"
+    return 1
+  fi
+
+  # Generate metadata files for the wallpaper.
+  wallpaper_metadata_desktop \
+    "${theme_id}" "${theme_name}" \
+    "${theme_author_name}" "${theme_author_email}" "${theme_license}" \
+    > "${theme_metadata_desktop_output}"
+
+  wallpaper_metadata_json \
+    "${theme_id}" "${theme_name}" \
+    "${theme_author_name}" "${theme_author_email}" "${theme_license}" \
+    > "${theme_metadata_json_output}"
+
+  wallpaper_metadata_xml \
+    "${theme_name}" \
+    "${theme_image_light_output}" "${theme_image_dark_output}" \
+    "${theme_metadata_time_of_day_xml_output}" \
+    "${theme_author_name}" "${theme_author_email}" "${theme_license}" \
+    > "${theme_metadata_xml_output}"
+
+  if [ -n "${theme_metadata_time_of_day_xml_output}" ]; then
+    wallpaper_metadata_time_of_day_xml "${theme_image_light_output}" "${theme_image_dark_output}" \
+    > "${theme_metadata_time_of_day_xml_output}"
+  fi
+
+  # The GNOME team, in their infinite wisdom, decided to store core metadata files separately
+  # from the actual wallpaper images and those metadata files that contain definitions
+  # for time-shifting wallpapers. So, we need to create a symlink for the metadata.xml file
+  # stored in our generated wallpaper directory at 'gnome-background-properties'.
+  if echo "${theme_output}" | grep -q "/share/backgrounds/"; then
+    mkdir -p "$(echo "${theme_output}" | grep -o ".*/share/")gnome-background-properties"
+    ln -sf "${theme_metadata_xml_output}" "$(echo "${theme_output}" | grep -o ".*/share/")gnome-background-properties/${theme_id}.xml"
+  fi
+
+  # Yay, we are done.
+  alert "The wallpaper has been generated successfully! You can find it at '${theme_output}'."
+  return 0
+}
+
+main "$@"
